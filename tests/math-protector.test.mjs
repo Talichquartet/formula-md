@@ -64,3 +64,18 @@ test('escapes formula HTML when restoring placeholders', () => {
   const result = protectMath('$x < y$');
   assert.equal(restoreMath(result.source, result.math), '$x &lt; y$');
 });
+
+test('maps protected Markdown line boundaries back to multiline formula source lines', () => {
+  const input = ['Before', '', '$$', 'x_1 + x_2', '$$', '', 'After'].join('\n');
+  const result = protectMath(input);
+
+  assert.equal(result.source.split('\n').length, 5);
+  assert.deepEqual(result.lineMap, [0, 1, 2, 5, 6, 7]);
+});
+
+test('line map includes the exclusive end boundary for a final multiline formula', () => {
+  const result = protectMath(['$$', 'x', '$$'].join('\n'));
+
+  assert.equal(result.source.split('\n').length, 1);
+  assert.deepEqual(result.lineMap, [0, 3]);
+});

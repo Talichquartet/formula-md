@@ -14,6 +14,10 @@ const state = {
   highlightFrame: null,
   scrollSyncFrame: null,
   scrollSyncSource: null,
+  scrollMapFrame: null,
+  scrollAnchors: [],
+  ignoredScroll: null,
+  editorLineCount: 1,
   restoringPositions: false
 };
 
@@ -38,6 +42,7 @@ const elements = {
   outline: document.querySelector('#outline'),
   outlineSection: document.querySelector('#outlineSection'),
   pdfButton: document.querySelector('#pdfButton'),
+  previewLabel: document.querySelector('.preview-label'),
   recentList: document.querySelector('#recentList'),
   recentSection: document.querySelector('#recentSection'),
   readModeButton: document.querySelector('#readModeButton'),
@@ -82,6 +87,25 @@ markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
   else token.attrs[targetIndex][1] = '_blank';
   token.attrSet('rel', 'noopener noreferrer');
   return self.renderToken(tokens, index, options);
+};
+
+markdown.core.ruler.after('block', 'formula_md_source_map', (parseState) => {
+  window.ScrollSync.annotateTokens(parseState.tokens, parseState.env.sourceLineMap);
+});
+
+const renderFence = markdown.renderer.rules.fence;
+markdown.renderer.rules.fence = (tokens, index, options, env, self) => {
+  const rendered = renderFence(tokens, index, options, env, self);
+  const start = tokens[index].attrGet(window.ScrollSync.START_ATTRIBUTE);
+  const end = tokens[index].attrGet(window.ScrollSync.END_ATTRIBUTE);
+  if (start === null || end === null) return rendered;
+
+  // The syntax highlighter returns its own <pre>, so markdown-it would
+  // otherwise discard the attributes attached to a fenced-code token.
+  return rendered.replace(
+    /^<pre(?=[\s>])/,
+    `<pre ${window.ScrollSync.START_ATTRIBUTE}="${start}" ${window.ScrollSync.END_ATTRIBUTE}="${end}"`
+  );
 };
 
 function activeTab() {
@@ -348,6 +372,7 @@ function countWords(content) {
 
 function updateLineNumbers() {
   const lineCount = Math.max(1, elements.sourceEditor.value.split('\n').length);
+  state.editorLineCount = lineCount;
   elements.lineNumbers.textContent = Array.from({ length: lineCount }, (_value, index) => index + 1).join('\n');
   elements.lineNumbers.style.transform = `translateY(${-elements.sourceEditor.scrollTop}px)`;
 }
@@ -398,15 +423,111 @@ function updateEditorPosition() {
   }
 }
 
-function getScrollProgress(element) {
-  const scrollableHeight = Math.max(0, element.scrollHeight - element.clientHeight);
-  return scrollableHeight > 0 ? element.scrollTop / scrollableHeight : 0;
+const SCROLL_SYNC_VIEWPORT_RATIO = 0.32;
+
+function editorMetrics() {
+  const styles = getComputedStyle(elements.sourceEditor);
+  const fontSize = Number.parseFloat(styles.fontSize) || 12;
+  return {
+    lineHeight: Number.parseFloat(styles.lineHeight) || fontSize * 1.65,
+    paddingTop: Number.parseFloat(styles.paddingTop) || 0,
+    lineCount: state.editorLineCount
+  };
+}
+
+function editorViewportOffset() {
+  return elements.sourceEditor.clientHeight * SCROLL_SYNC_VIEWPORT_RATIO;
+}
+
+function previewViewportOffset() {
+  const inset = elements.previewLabel.getBoundingClientRect().height;
+  return inset + Math.max(0, elements.contentScroller.clientHeight - inset) * SCROLL_SYNC_VIEWPORT_RATIO;
+}
+
+function scrollContentOffset(rect, scrollerRect, edge) {
+  return elements.contentScroller.scrollTop + rect[edge] - scrollerRect.top;
+}
+
+function rebuildScrollAnchors() {
+  if (state.scrollMapFrame !== null) cancelAnimationFrame(state.scrollMapFrame);
+  state.scrollMapFrame = null;
+  if (!activeTab() || elements.article.hidden) {
+    state.scrollAnchors = [];
+    return;
+  }
+
+  const scrollerRect = elements.contentScroller.getBoundingClientRect();
+  const articleRect = elements.article.getBoundingClientRect();
+  const points = [];
+  const selector = `[${window.ScrollSync.START_ATTRIBUTE}][${window.ScrollSync.END_ATTRIBUTE}]`;
+
+  elements.article.querySelectorAll(selector).forEach((element) => {
+    const start = Number.parseFloat(element.getAttribute(window.ScrollSync.START_ATTRIBUTE));
+    const end = Number.parseFloat(element.getAttribute(window.ScrollSync.END_ATTRIBUTE));
+    const rect = element.getBoundingClientRect();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || (rect.width === 0 && rect.height === 0)) return;
+    points.push({ line: start, offset: scrollContentOffset(rect, scrollerRect, 'top'), kind: 'start' });
+    points.push({ line: end, offset: scrollContentOffset(rect, scrollerRect, 'bottom'), kind: 'end' });
+  });
+
+  state.scrollAnchors = window.ScrollSync.createAnchorMap(
+    points,
+    editorMetrics().lineCount,
+    scrollContentOffset(articleRect, scrollerRect, 'top'),
+    scrollContentOffset(articleRect, scrollerRect, 'bottom')
+  );
+}
+
+function scheduleScrollAnchorRebuild() {
+  if (state.scrollMapFrame !== null) return;
+  state.scrollMapFrame = requestAnimationFrame(rebuildScrollAnchors);
+}
+
+function setSyncedScrollTop(element, top) {
+  const maximum = Math.max(0, element.scrollHeight - element.clientHeight);
+  const targetTop = Math.max(0, Math.min(maximum, top));
+  if (Math.abs(element.scrollTop - targetTop) <= 0.5) return;
+  state.ignoredScroll = { element, top: targetTop };
+  element.scrollTop = targetTop;
+}
+
+function consumeSyncedScroll(element) {
+  if (state.ignoredScroll?.element !== element) return false;
+  const matches = Math.abs(element.scrollTop - state.ignoredScroll.top) <= 1;
+  state.ignoredScroll = null;
+  return matches;
 }
 
 function syncScrollPosition(source, target) {
-  const targetScrollableHeight = Math.max(0, target.scrollHeight - target.clientHeight);
-  const targetScrollTop = getScrollProgress(source) * targetScrollableHeight;
-  if (Math.abs(target.scrollTop - targetScrollTop) > 0.5) target.scrollTop = targetScrollTop;
+  if (state.scrollAnchors.length < 2) rebuildScrollAnchors();
+  const sourceMaximum = Math.max(0, source.scrollHeight - source.clientHeight);
+  const targetMaximum = Math.max(0, target.scrollHeight - target.clientHeight);
+
+  if (source.scrollTop <= 0.5 || sourceMaximum === 0) {
+    setSyncedScrollTop(target, 0);
+    return;
+  }
+  if (sourceMaximum - source.scrollTop <= 0.5) {
+    setSyncedScrollTop(target, targetMaximum);
+    return;
+  }
+
+  const metrics = editorMetrics();
+  if (source === elements.sourceEditor) {
+    const editorOffset = source.scrollTop + editorViewportOffset();
+    const line = Math.max(
+      0,
+      Math.min(metrics.lineCount, (editorOffset - metrics.paddingTop) / metrics.lineHeight)
+    );
+    const previewOffset = window.ScrollSync.previewOffsetForLine(state.scrollAnchors, line);
+    setSyncedScrollTop(target, previewOffset - previewViewportOffset());
+    return;
+  }
+
+  const previewOffset = source.scrollTop + previewViewportOffset();
+  const line = window.ScrollSync.sourceLineForOffset(state.scrollAnchors, previewOffset);
+  const editorOffset = metrics.paddingTop + line * metrics.lineHeight;
+  setSyncedScrollTop(target, editorOffset - editorViewportOffset());
 }
 
 function scheduleScrollSync(source) {
@@ -447,6 +568,9 @@ function setEditMode(editing, remember = true, syncOnShow = true) {
     updateEditorDecorations();
     updateEditorPosition();
     requestAnimationFrame(() => {
+      // Switching to the split layout changes preview wrapping and therefore
+      // every visual anchor position. Measure after the new grid has laid out.
+      rebuildScrollAnchors();
       elements.sourceEditor.focus({ preventScroll: true });
       if (syncOnShow) syncScrollPosition(elements.contentScroller, elements.sourceEditor);
     });
@@ -466,7 +590,7 @@ function clearSearch(resetInput = false) {
 }
 
 function restoreTabPositions(tab, positions = null, options = {}) {
-  const { restoreEditor = true } = options;
+  const { restoreEditor = true, syncFromEditor = false } = options;
   const target = positions || {
     preview: tab.previewPosition,
     editor: tab.editorPosition,
@@ -483,6 +607,7 @@ function restoreTabPositions(tab, positions = null, options = {}) {
       restorePosition,
       restoreEditor
     });
+    if (syncFromEditor) syncScrollPosition(elements.sourceEditor, elements.contentScroller);
     updateLineNumbers();
     syncSourceHighlightScroll();
     if (editorRestored) updateEditorPosition();
@@ -527,10 +652,16 @@ async function renderActiveTab(options = {}) {
 
   const protectedSource = window.MathProtector.protectMath(tab.document.content);
   state.mathCount = protectedSource.math.length;
-  const rendered = markdown.render(protectedSource.source);
+  const rendered = markdown.render(protectedSource.source, { sourceLineMap: protectedSource.lineMap });
   const sanitized = window.DOMPurify.sanitize(rendered, {
     USE_PROFILES: { html: true },
-    ADD_ATTR: ['target', 'rel', 'class']
+    ADD_ATTR: [
+      'target',
+      'rel',
+      'class',
+      window.ScrollSync.START_ATTRIBUTE,
+      window.ScrollSync.END_ATTRIBUTE
+    ]
   });
 
   if (window.MathJax.typesetClear) window.MathJax.typesetClear([elements.article]);
@@ -560,6 +691,7 @@ async function renderActiveTab(options = {}) {
   elements.formulaCount.textContent = `${state.mathCount} 个公式`;
   elements.welcome.hidden = true;
   elements.article.hidden = false;
+  rebuildScrollAnchors();
   elements.statusBar.hidden = false;
   elements.searchControl.hidden = false;
   elements.modeControl.hidden = false;
@@ -568,7 +700,10 @@ async function renderActiveTab(options = {}) {
   // the selection captured before asynchronous MathJax layout would move the
   // caret backwards if the user kept typing while layout was in progress.
   if (!fromEditor) setEditMode(tab.isEditing, false, false);
-  restoreTabPositions(tab, positionTarget, { restoreEditor: !fromEditor });
+  restoreTabPositions(tab, positionTarget, {
+    restoreEditor: !fromEditor,
+    syncFromEditor: fromEditor && tab.isEditing
+  });
   refreshDirtyUI();
 }
 
@@ -591,6 +726,10 @@ function showWelcome() {
   elements.documentArea.classList.remove('editing');
   if (state.highlightFrame !== null) cancelAnimationFrame(state.highlightFrame);
   state.highlightFrame = null;
+  if (state.scrollMapFrame !== null) cancelAnimationFrame(state.scrollMapFrame);
+  state.scrollMapFrame = null;
+  state.scrollAnchors = [];
+  state.ignoredScroll = null;
   elements.sourceHighlight.textContent = '';
   elements.article.hidden = true;
   elements.welcome.hidden = false;
@@ -615,6 +754,10 @@ async function switchTab(filePath, saveCurrent = true) {
   if (state.scrollSyncFrame !== null) cancelAnimationFrame(state.scrollSyncFrame);
   state.scrollSyncFrame = null;
   state.scrollSyncSource = null;
+  if (state.scrollMapFrame !== null) cancelAnimationFrame(state.scrollMapFrame);
+  state.scrollMapFrame = null;
+  state.scrollAnchors = [];
+  state.ignoredScroll = null;
   state.restoringPositions = true;
   state.activePath = filePath;
   elements.sourceEditor.value = target.document.content;
@@ -1008,14 +1151,16 @@ elements.sourceEditor.addEventListener('scroll', () => {
   const tab = activeTab();
   if (tab && !state.restoringPositions) tab.editorPosition = positionFor(elements.sourceEditor);
   schedulePersistSession();
-  scheduleScrollSync(elements.sourceEditor);
+  if (!consumeSyncedScroll(elements.sourceEditor)) scheduleScrollSync(elements.sourceEditor);
 });
 elements.contentScroller.addEventListener('scroll', () => {
   const tab = activeTab();
   if (tab && !state.restoringPositions) tab.previewPosition = positionFor(elements.contentScroller);
   schedulePersistSession();
-  scheduleScrollSync(elements.contentScroller);
+  if (!consumeSyncedScroll(elements.contentScroller)) scheduleScrollSync(elements.contentScroller);
 });
+const articleResizeObserver = new ResizeObserver(scheduleScrollAnchorRebuild);
+articleResizeObserver.observe(elements.article);
 elements.sourceEditor.addEventListener('click', updateEditorPosition);
 elements.sourceEditor.addEventListener('keyup', updateEditorPosition);
 elements.sourceEditor.addEventListener('select', updateEditorPosition);

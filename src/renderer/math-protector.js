@@ -27,6 +27,54 @@
     return length;
   }
 
+  function countNewlines(value) {
+    let count = 0;
+    let index = value.indexOf('\n');
+    while (index !== -1) {
+      count += 1;
+      index = value.indexOf('\n', index + 1);
+    }
+    return count;
+  }
+
+  function buildSourceLineMap(source, protectedSource, math) {
+    const lineMap = [0];
+    let sourceCursor = 0;
+    let protectedCursor = 0;
+    let sourceLine = 0;
+    let mathIndex = 0;
+    let token = math.length ? `${TOKEN_PREFIX}0ENDTOKEN` : null;
+    let mathSource = math[0];
+
+    while (protectedCursor < protectedSource.length) {
+      if (
+        token &&
+        protectedSource.startsWith(token, protectedCursor) &&
+        source.startsWith(mathSource, sourceCursor)
+      ) {
+        sourceLine += countNewlines(mathSource);
+        sourceCursor += mathSource.length;
+        protectedCursor += token.length;
+        mathIndex += 1;
+        token = mathIndex < math.length ? `${TOKEN_PREFIX}${mathIndex}ENDTOKEN` : null;
+        mathSource = math[mathIndex];
+        continue;
+      }
+
+      if (protectedSource[protectedCursor] === '\n') {
+        sourceLine += 1;
+        lineMap.push(sourceLine);
+      }
+      sourceCursor += 1;
+      protectedCursor += 1;
+    }
+
+    // Markdown-it uses an exclusive line boundary for token.map[1]. This
+    // final entry also covers protected multiline formulas at end-of-file.
+    lineMap.push(countNewlines(source) + 1);
+    return lineMap;
+  }
+
   function protectMath(source) {
     const math = [];
     let output = '';
@@ -139,7 +187,7 @@
       cursor += 1;
     }
 
-    return { source: output, math };
+    return { source: output, math, lineMap: buildSourceLineMap(source, output, math) };
   }
 
   function escapeHtml(value) {
