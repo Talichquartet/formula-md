@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } = require('electron');
 const fs = require('node:fs');
 const fsPromises = require('node:fs/promises');
 const path = require('node:path');
@@ -430,6 +430,31 @@ async function rebuildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(await buildMenuTemplate()));
 }
 
+function windowAppearance() {
+  return {
+    platform: process.platform,
+    theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+    reducedTransparency: nativeTheme.prefersReducedTransparency,
+    highContrast: nativeTheme.shouldUseHighContrastColors,
+    active: Boolean(mainWindow?.isFocused())
+  };
+}
+
+function syncWindowAppearance() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const appearance = windowAppearance();
+  const opaque = appearance.reducedTransparency || appearance.highContrast;
+  if (process.platform === 'darwin') {
+    mainWindow.setVibrancy(opaque ? null : 'sidebar');
+  }
+  mainWindow.setBackgroundColor(process.platform === 'darwin' && !opaque
+    ? '#00000000'
+    : appearance.theme === 'dark' ? '#202528' : '#edf1f4');
+  mainWindow.webContents.send('appearance:changed', appearance);
+}
+
+nativeTheme.on('updated', syncWindowAppearance);
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -438,13 +463,13 @@ function createWindow() {
     minHeight: 600,
     show: false,
     title: 'Formula MD',
-    backgroundColor: '#f7f7f4',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#202528' : '#edf1f4',
     ...(process.platform === 'darwin'
       ? {
           titleBarStyle: 'hiddenInset',
           trafficLightPosition: { x: 18, y: 17 },
           vibrancy: 'sidebar',
-          visualEffectState: 'active'
+          visualEffectState: 'followWindow'
         }
       : {}),
     webPreferences: {
@@ -458,6 +483,9 @@ function createWindow() {
     }
   });
 
+  syncWindowAppearance();
+  mainWindow.on('focus', () => mainWindow.webContents.send('appearance:changed', windowAppearance()));
+  mainWindow.on('blur', () => mainWindow.webContents.send('appearance:changed', windowAppearance()));
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.once('ready-to-show', () => mainWindow?.show());
   mainWindow.on('close', (event) => {
@@ -496,6 +524,12 @@ function createWindow() {
   });
 }
 
+ipcMain.handle('appearance:set-theme', (_event, theme) => {
+  if (!['system', 'light', 'dark'].includes(theme)) throw new Error('无效的主题。');
+  nativeTheme.themeSource = theme;
+  syncWindowAppearance();
+  return windowAppearance();
+});
 ipcMain.handle('document:choose', chooseMarkdownFile);
 ipcMain.handle('document:create', createBlankMarkdownFile);
 ipcMain.handle('document:read', (_event, filePath) => readMarkdownFile(filePath));

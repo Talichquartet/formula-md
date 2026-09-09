@@ -561,6 +561,7 @@ function setEditMode(editing, remember = true, syncOnShow = true) {
   elements.editModeButton.classList.toggle('active', tab.isEditing);
   elements.readModeButton.setAttribute('aria-pressed', String(!tab.isEditing));
   elements.editModeButton.setAttribute('aria-pressed', String(tab.isEditing));
+  window.GlassEffects.setMode(tab.isEditing);
   elements.editStatus.hidden = !tab.isEditing;
   elements.editStatusSeparator.hidden = !tab.isEditing;
 
@@ -1065,21 +1066,33 @@ function moveSearch(direction) {
   updateSearchSelection();
 }
 
-function applyTheme(theme) {
-  document.documentElement.dataset.theme = theme;
-  localStorage.setItem('formula-md-theme', theme);
+function applyAppearance(appearance) {
+  const { theme, platform, reducedTransparency, highContrast, active } = appearance;
+  Object.assign(document.documentElement.dataset, {
+    theme,
+    platform,
+    reducedTransparency: String(reducedTransparency),
+    highContrast: String(highContrast),
+    windowActive: String(active)
+  });
   const lightTheme = document.querySelector('#hljsLightTheme');
   const darkTheme = document.querySelector('#hljsDarkTheme');
   if (lightTheme && darkTheme) {
     lightTheme.disabled = theme === 'dark';
     darkTheme.disabled = theme !== 'dark';
   }
+  window.GlassEffects.refresh();
+}
+
+function applyTheme(theme) {
+  localStorage.setItem('formula-md-theme', theme);
+  window.formulaMD.setTheme(theme).then(applyAppearance);
 }
 
 function initializeTheme() {
   const stored = localStorage.getItem('formula-md-theme');
-  const systemDark = matchMedia('(prefers-color-scheme: dark)').matches;
-  applyTheme(stored || (systemDark ? 'dark' : 'light'));
+  window.formulaMD.onAppearanceChanged(applyAppearance);
+  window.formulaMD.setTheme(['dark', 'light'].includes(stored) ? stored : 'system').then(applyAppearance);
 }
 
 async function restoreSession() {

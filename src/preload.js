@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('formulaMD', {
+  setTheme: (theme) => ipcRenderer.invoke('appearance:set-theme', theme),
+  onAppearanceChanged: (callback) => ipcRenderer.on('appearance:changed', (_event, appearance) => callback(appearance)),
   createFile: () => ipcRenderer.invoke('document:create'),
   chooseFile: () => ipcRenderer.invoke('document:choose'),
   readFile: (file) => ipcRenderer.invoke('document:read', webUtils.getPathForFile(file)),

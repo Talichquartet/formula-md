@@ -50,7 +50,9 @@ src/
     markdown-source-highlighter.js # 编辑器面板中 Markdown 源码的语法高亮
     editor-state.js                # 视图位置恢复与保存文档状态对账的纯函数
     mathjax-config.js              # window.MathJax 配置（tex 宏包、分隔符、CHTML 选项）
-    styles.css                     # 全部样式（约 1700 行）
+    styles.css                     # 基础布局、正文、编辑器与打印样式（约 1700 行）
+    glass.css                      # 仅屏幕加载的新拟物玻璃材质与响应式布局，不参与 PDF
+    glass-effects.js               # 控件玻璃形变与共用光斑，只在输入后请求动画帧
 tests/            # node:test 单元测试（.test.mjs）
 examples/latex-showcase.md  # 公式支持演示文件
 build/            # 应用图标资源
@@ -101,6 +103,7 @@ dist/             # 打包产物
 - 测试文件为 ESM（`.mjs`），通过 `createRequire` 加载被测的 UMD 模块
 - 现有测试只覆盖三个纯函数模块：`math-protector`、`markdown-source-highlighter`、`editor-state`；`main.js`、`app.js` 没有自动化测试
 - 修改 `math-protector.js` 等被测模块后务必跑 `npm test`；新纯函数逻辑建议补对应测试
+- 修改玻璃界面可运行 `pnpm test:appearance`，用隔离会话检查真实 macOS Electron 窗口；`pnpm bench:appearance` 记录短时性能样本，产物位于 `dist/glass-qa/`
 - 验证公式渲染效果可打开 `examples/latex-showcase.md` 手动检查
 
 ## 安全注意事项
